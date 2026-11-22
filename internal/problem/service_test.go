@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -68,6 +69,51 @@ func TestAuthorizeProblemRejudgeUsesOperatorPermission(t *testing.T) {
 	}
 	err := service.AuthorizeProblemRejudge(t.Context(), auth.Actor{UserID: 20, Role: auth.RoleUser}, 1)
 	assertAppCode(t, err, "problem.forbidden")
+}
+
+func TestUpdateProblemTitle(t *testing.T) {
+	const originalTitle = "Original title"
+	for _, tc := range []struct {
+		name      string
+		title     string
+		omitTitle bool
+		wantTitle string
+		wantError bool
+	}{
+		{name: "empty", wantTitle: originalTitle, wantError: true},
+		{name: "whitespace", title: " \t\r\n ", wantTitle: originalTitle, wantError: true},
+		{name: "unicode whitespace", title: "\u00a0\u2003", wantTitle: originalTitle, wantError: true},
+		{name: "omitted", omitTitle: true, wantTitle: originalTitle},
+		{name: "rename", title: "New title", wantTitle: "New title"},
+		{name: "preserve nonblank whitespace", title: "  New title\t", wantTitle: "  New title\t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepository()
+			repo.problems[1] = ProblemRecord{ID: 1, OwnerUserID: 10, Title: originalTitle, Status: StatusDraft, Visibility: VisibilityPrivate}
+			service := newProblemService(repo, &fakeStorage{})
+			actor := auth.Actor{UserID: 10, Roles: []auth.Role{auth.RoleAuthor}, Permissions: seededPermissions(auth.RoleAuthor)}
+			input := UpdateProblemInput{}
+			if !tc.omitTitle {
+				input.Title = &tc.title
+			}
+
+			updated, err := service.UpdateProblem(t.Context(), actor, 1, input)
+			if tc.wantError {
+				assertAppCode(t, err, "problem.title_required")
+				assertHTTPStatus(t, err, http.StatusBadRequest)
+			} else {
+				if err != nil {
+					t.Fatalf("UpdateProblem() error = %v", err)
+				}
+				if updated.Title != tc.wantTitle {
+					t.Errorf("returned title = %q, want %q", updated.Title, tc.wantTitle)
+				}
+			}
+			if got := repo.problems[1].Title; got != tc.wantTitle {
+				t.Errorf("stored title = %q, want %q", got, tc.wantTitle)
+			}
+		})
+	}
 }
 
 func TestUpdateProblemRejectsStatusMutation(t *testing.T) {
